@@ -4,7 +4,7 @@ use std::io::{prelude::*, BufReader, BufWriter, LineWriter};
 
 use chrono::{NaiveTime, Utc, Weekday};
 use flate2::write::GzDecoder;
-use inquire::{DateSelect, Select, Text};
+use inquire::{DateSelect, Select, Text, Password};
 use reqwest::{header, Client, Method};
 
 const PAPERTRAIL_URL: &str = "https://papertrailapp.com/api/v1/archives/YYYY-MM-DD-HH/download";
@@ -12,7 +12,7 @@ const PAPERTRAIL_URL: &str = "https://papertrailapp.com/api/v1/archives/YYYY-MM-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let options: Vec<&str> = vec!["Retrieve logs", "Filter logs"];
-    let token = Text::new("Papertrail api token?").prompt()?;
+    let token = Password::new("Papertrail api token?").without_confirmation().prompt()?;
     let ans: &str = Select::new("What do you want to do?", options).prompt()?;
 
     if ans == "Retrieve logs" {
