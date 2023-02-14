@@ -1,10 +1,9 @@
-#![feature(fs_try_exists)]
 use std::fs::{self, File};
 use std::io::{prelude::*, BufReader, BufWriter, LineWriter};
 
 use chrono::{NaiveTime, Utc, Weekday};
 use flate2::write::GzDecoder;
-use inquire::{DateSelect, Select, Text, Password};
+use inquire::{DateSelect, Password, Select, Text};
 use reqwest::{header, Client, Method};
 
 const PAPERTRAIL_URL: &str = "https://papertrailapp.com/api/v1/archives/YYYY-MM-DD-HH/download";
@@ -12,7 +11,9 @@ const PAPERTRAIL_URL: &str = "https://papertrailapp.com/api/v1/archives/YYYY-MM-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let options: Vec<&str> = vec!["Retrieve logs", "Filter logs"];
-    let token = Password::new("Papertrail api token?").without_confirmation().prompt()?;
+    let token = Password::new("Papertrail api token?")
+        .without_confirmation()
+        .prompt()?;
     let ans: &str = Select::new("What do you want to do?", options).prompt()?;
 
     if ans == "Retrieve logs" {
@@ -21,23 +22,16 @@ async fn main() -> anyhow::Result<()> {
             .with_week_start(Weekday::Mon)
             .prompt()?;
         let date_format = selected_date.format("%Y-%m-%d").to_string();
-        match fs::try_exists(&date_format) {
-            Ok(exists) => {
-                if !exists {
-                    fs::create_dir(&date_format)?;
-                }
-            }
+        match fs::create_dir(&date_format) {
+            Ok(_) => {}
             Err(_) => {
-                fs::create_dir(&date_format)?;
+                println!("Dir already exits")
             }
         }
         let (start_hour, end_hour) = get_start_and_end()?;
 
         let mut headers = header::HeaderMap::new();
-        headers.insert(
-            "X-Papertrail-Token",
-            header::HeaderValue::from_str(&token)?,
-        );
+        headers.insert("X-Papertrail-Token", header::HeaderValue::from_str(&token)?);
         let client = reqwest::Client::builder()
             .gzip(true)
             .default_headers(headers)
