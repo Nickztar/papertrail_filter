@@ -1,5 +1,6 @@
 use std::fs::{self, File};
 use std::io::{prelude::*, BufReader, BufWriter, LineWriter};
+use std::thread;
 
 use chrono::{NaiveTime, Utc, Weekday};
 use flate2::write::GzDecoder;
@@ -11,12 +12,12 @@ const PAPERTRAIL_URL: &str = "https://papertrailapp.com/api/v1/archives/YYYY-MM-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let options: Vec<&str> = vec!["Retrieve logs", "Filter logs"];
-    let token = Password::new("Papertrail api token?")
-        .without_confirmation()
-        .prompt()?;
     let ans: &str = Select::new("What do you want to do?", options).prompt()?;
 
     if ans == "Retrieve logs" {
+        let token = Password::new("Papertrail api token?")
+            .without_confirmation()
+            .prompt()?;
         let selected_date = DateSelect::new("What day do you want to download?")
             .with_starting_date(Utc::now().date_naive())
             .with_week_start(Weekday::Mon)
@@ -55,6 +56,23 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+//Schema:
+// id ?
+// generated_at date
+// received_at date
+// source_id i32
+// source_name str
+// source_ip str
+// facility_name str
+// severity_name str
+// program str
+// message str
+struct Line {
+    id: u64,
+    line: String,
+}
+
+// Parallelize https://stackoverflow.com/questions/51044467/how-can-i-perform-parallel-asynchronous-http-get-requests-with-reqwest
 async fn retrive_log(client: &Client, archive: String, path: String) -> anyhow::Result<()> {
     println!("Dowloading archive for: {}", archive);
     let log_file = client
@@ -73,9 +91,9 @@ async fn retrive_log(client: &Client, archive: String, path: String) -> anyhow::
 }
 
 fn get_start_and_end() -> anyhow::Result<(u32, u32)> {
-    let possible_starts = (0..22).collect::<Vec<u32>>();
+    let possible_starts = (0..24).collect::<Vec<u32>>();
     let start: u32 = Select::new("What start hour would you like?", possible_starts).prompt()?;
-    let possible_ends = (start..22).collect::<Vec<u32>>();
+    let possible_ends = (start..24).collect::<Vec<u32>>();
     let end: u32 = Select::new("What end hour would you like?", possible_ends).prompt()?;
 
     Ok((start, end))
@@ -91,17 +109,48 @@ fn filter_logs() -> anyhow::Result<()> {
     let file = File::create(format!("{}.tsv", Utc::now().format("%Y_%m_%d_%H_%M")))?;
     let mut exit_file = LineWriter::new(file);
     let dirs = fs::read_dir(date_format.to_string())?;
+    let mut thread_handles: Vec<_> = Vec::new();
     for dir in dirs {
-        let file = File::open(dir?.path())?;
-        let reader = BufReader::new(file);
-        for line in reader.lines() {
-            let line = line?;
-            if line.contains(&contain_string) {
-                exit_file.write_fmt(format_args!("{}\n", line))?
-            }
-        }
-        exit_file.flush()?;
+        let contain_string = contain_string.to_string();
+        let handle = thread::spawn(move || {
+            // some work here
+            let file = File::open(dir.unwrap().path()).unwrap();
+            let reader = BufReader::new(file);
+            reader
+                .lines()
+                .filter_map(|line| {
+                    let line = line.unwrap();
+                    if line.contains(&contain_string) {
+                        let (id, _) = line.split_once('\t').unwrap();
+                        Some(Line {
+                            id: id.parse::<u64>().unwrap(),
+                            line,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<Line>>()
+        });
+        thread_handles.push(handle);
     }
+    // some work here
+    let mut lines: Vec<Line> = Vec::new();
+    //How do you handle the ordering?
+    for handle in thread_handles {
+        let mut thread_lines = handle.join().unwrap();
+        lines.append(&mut thread_lines)
+    }
+    lines.sort_by(|a, b| a.id.cmp(&b.id));
+    exit_file.write(
+        lines
+            .into_iter()
+            .map(|l| l.line)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .as_bytes(),
+    )?;
 
+    exit_file.flush()?;
     Ok(())
 }
