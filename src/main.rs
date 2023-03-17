@@ -1,8 +1,9 @@
-use std::fs::{self, File};
+use std::collections::{HashMap, VecDeque};
+use std::fs::{self, read, File};
 use std::io::{prelude::*, BufReader, BufWriter, LineWriter};
-use std::thread;
+use std::{any, thread};
 
-use chrono::{NaiveTime, Utc, Weekday};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc, Weekday};
 use flate2::write::GzDecoder;
 use inquire::{DateSelect, Password, Select, Text};
 use reqwest::{header, Client, Method};
@@ -11,7 +12,7 @@ const PAPERTRAIL_URL: &str = "https://papertrailapp.com/api/v1/archives/YYYY-MM-
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let options: Vec<&str> = vec!["Retrieve logs", "Filter logs"];
+    let options: Vec<&str> = vec!["Retrieve logs", "Filter logs", "Combine filters"];
     let ans: &str = Select::new("What do you want to do?", options).prompt()?;
 
     if ans == "Retrieve logs" {
@@ -37,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
             .gzip(true)
             .default_headers(headers)
             .build()?;
-        for hour in start_hour..end_hour {
+        for hour in start_hour..=end_hour {
             let time_format = NaiveTime::from_hms_milli_opt(hour, 0, 0, 0)
                 .unwrap()
                 .format("-%H")
@@ -49,8 +50,10 @@ async fn main() -> anyhow::Result<()> {
                 Err(_) => println!("Failed to find {}", archive),
             };
         }
-    } else {
+    } else if ans == "Filter logs" {
         filter_logs()?;
+    } else {
+        combine_logs()?;
     }
 
     Ok(())
@@ -67,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
 // severity_name str
 // program str
 // message str
+#[derive(Clone)]
 struct Line {
     id: u64,
     line: String,
@@ -113,22 +117,32 @@ fn filter_logs() -> anyhow::Result<()> {
     for dir in dirs {
         let contain_string = contain_string.to_string();
         let handle = thread::spawn(move || {
-            // some work here
             let file = File::open(dir.unwrap().path()).unwrap();
             let reader = BufReader::new(file);
             reader
                 .lines()
                 .filter_map(|line| {
                     let line = line.unwrap();
-                    if line.contains(&contain_string) {
-                        let (id, _) = line.split_once('\t').unwrap();
-                        Some(Line {
-                            id: id.parse::<u64>().unwrap(),
-                            line,
-                        })
+                    let parts = line.split('\t').collect::<Vec<_>>();
+                    let id = parts.first().unwrap().parse::<u64>().unwrap();
+                    // let message = parts.last().unwrap();
+                    // let generated_at = parts.get(1).unwrap();
+                    if line.contains(&contain_string)
+                    {
+                        // let (id, _) = line.split_once('\t').unwrap();
+                        Some(Line { id, line })
                     } else {
                         None
                     }
+                    // if includes.iter().any(|imei| line.contains(imei))
+                    //     && !excludes.iter().any(|exl| line.contains(exl))
+                    // {
+                    //     // let (id, _) = line.split_once('\t').unwrap();
+                    //     let line = format!("{}\t{}", generated_at, message);
+                    //     Some(Line { id, line })
+                    // } else {
+                    //     None
+                    // }
                 })
                 .collect::<Vec<Line>>()
         });
@@ -152,5 +166,21 @@ fn filter_logs() -> anyhow::Result<()> {
     )?;
 
     exit_file.flush()?;
+    Ok(())
+}
+
+fn combine_logs() -> anyhow::Result<()> {
+    let file = File::create(format!("{}.tsv", Utc::now().format("%Y_%m_%d_%H_%M")))?;
+    let mut exit_file = LineWriter::new(file);
+    let dirs = fs::read_dir(String::from("collect"))?;
+    for dir in dirs {
+        dbg!(&dir);
+        let dir = dir.unwrap();
+        let file = File::open(dir.path()).unwrap();
+        let mut reader = BufReader::new(file);
+        exit_file.write(reader.buffer())?;
+        std::io::copy(&mut reader, &mut exit_file)?;
+    }
+
     Ok(())
 }
